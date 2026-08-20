@@ -1,0 +1,30 @@
+# 将本段合并到 CPA 主配置。动态库文件名必须为 universal-provider.so。
+plugins:
+  enabled: true
+  dir: plugins
+  configs:
+    universal-provider:
+      enabled: true
+      priority: 100
+      # CPA 官方协议标识：openai / openai-response / claude / gemini
+      protocol: openai
+      # 填协议 API 根路径；插件会追加 /chat/completions、/responses、/messages
+      # 或 Gemini /models/<model>:generateContent。
+      base-url: https://api.example.com/v1
+      headers:
+        X-Organization: example
+      api-key-entries:
+        - api-key: replace-me-primary
+          weight: 3
+        - api-key: replace-me-secondary
+          # weight 省略时为 1；<=0 的条目被排除；最大 1000000。
+      models:
+        - name: upstream-model-id
+          alias: public-model
+          display-name: 示例通用模型
+          max-context-length: 128000
+          input-modalities: [text, image]
+          output-modalities: [text]
+      image-generation: false
+      # auto 不覆盖请求；其余值按选定协议写入协议原生推理字段。
+      reasoning-effort: auto

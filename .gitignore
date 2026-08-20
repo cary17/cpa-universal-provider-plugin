@@ -1,0 +1,22 @@
+# Build artifacts
+dist/
+*.so
+*.dylib
+*.dll
+*.h
+
+# Local Go caches
+.gocache/
+.gotmp/
+
+# Local configuration and secrets
+config.yaml
+*.local.yaml
+.env
+.env.*
+
+# Editor / OS
+.idea/
+.vscode/
+.DS_Store
+*.swp
