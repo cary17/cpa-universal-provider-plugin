@@ -1,4 +1,4 @@
-# 将本段合并到 CPA 主配置。动态库文件名必须为 universal-provider.so。
+# Merge under CPA's main configuration. The library filename must be universal-provider.so/.dylib.
 plugins:
   enabled: true
   dir: plugins
@@ -6,25 +6,41 @@ plugins:
     universal-provider:
       enabled: true
       priority: 100
-      # CPA 官方协议标识：openai / openai-response / claude / gemini
-      protocol: openai
-      # 填协议 API 根路径；插件会追加 /chat/completions、/responses、/messages
-      # 或 Gemini /models/<model>:generateContent。
-      base-url: https://api.example.com/v1
-      headers:
-        X-Organization: example
-      api-key-entries:
-        - api-key: replace-me-primary
-          weight: 3
-        - api-key: replace-me-secondary
-          # weight 省略时为 1；<=0 的条目被排除；最大 1000000。
-      models:
-        - name: upstream-model-id
-          alias: public-model
-          display-name: 示例通用模型
-          max-context-length: 128000
-          input-modalities: [text, image]
-          output-modalities: [text]
-      image-generation: false
-      # auto 不覆盖请求；其余值按选定协议写入协议原生推理字段。
-      reasoning-effort: auto
+      providers:
+        - id: primary
+          name: Primary OpenAI
+          enabled: true
+          protocol: openai # openai / openai-response / claude / gemini
+          base-url: https://api.example.com/v1
+          headers:
+            X-Organization: example
+          api-key-entries:
+            - api-key: replace-with-secret
+              weight: 3
+            - api-key: replace-with-another-secret
+              weight: 1
+          models:
+            - name: upstream-model-id
+              alias: public-model
+              display-name: Example Model
+              max-context-length: 128000
+              input-modalities: [text, image]
+              output-modalities: [text]
+          image-generation: false
+          # auto/none/minimal/low/medium/high/xhigh/max
+          reasoning-effort: auto
+        - id: backup-claude
+          name: Backup Claude
+          enabled: false
+          protocol: claude
+          base-url: https://api.anthropic.com/v1
+          headers: {}
+          api-key-entries:
+            - api-key: replace-with-secret
+          models:
+            - name: claude-model-id
+              alias: backup-model
+              input-modalities: [text, image]
+              output-modalities: [text]
+          image-generation: false
+          reasoning-effort: max

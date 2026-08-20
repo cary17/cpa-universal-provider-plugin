@@ -23,6 +23,7 @@ type registrationCapabilities struct {
 	ExecutorModelScope    string   `json:"executor_model_scope"`
 	ExecutorInputFormats  []string `json:"executor_input_formats"`
 	ExecutorOutputFormats []string `json:"executor_output_formats"`
+	ManagementAPI         bool     `json:"management_api"`
 }
 
 func handleMethod(method string, raw []byte) ([]byte, error) {
@@ -37,7 +38,11 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 			return nil, err
 		}
 		state.Store(next)
-		return okEnvelope(pluginRegistration(next.Config.Protocol))
+		return okEnvelope(pluginRegistration())
+	case pluginabi.MethodManagementRegister:
+		return managementRegister()
+	case pluginabi.MethodManagementHandle:
+		return managementHandle(raw)
 	case pluginabi.MethodModelStatic:
 		return staticModels()
 	case pluginabi.MethodModelForAuth:
@@ -61,14 +66,14 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 	}
 }
 
-func pluginRegistration(protocol string) registration {
-	formats := []string{protocol}
-	return registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Universal Provider", Version: "0.1.0", Author: "cary17", GitHubRepository: "https://github.com/cary17/cpa-universal-provider-plugin", ConfigFields: []pluginapi.ConfigField{
-		{Name: "protocol", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"openai", "openai-response", "claude", "gemini"}, Description: "上游 CPA 协议标识。"},
-		{Name: "base-url", Type: pluginapi.ConfigFieldTypeString, Description: "上游 API 根 URL。"}, {Name: "headers", Type: pluginapi.ConfigFieldTypeObject, Description: "附加请求头。"},
-		{Name: "api-key-entries", Type: pluginapi.ConfigFieldTypeArray, Description: "静态 API key 与权重。"}, {Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "模型及模态元数据。"},
-		{Name: "image-generation", Type: pluginapi.ConfigFieldTypeBoolean, Description: "允许图像输出声明和明显图像生成请求。"}, {Name: "reasoning-effort", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"auto", "none", "minimal", "low", "medium", "high", "xhigh"}, Description: "协议原生推理预设；auto 不覆盖请求。"},
-	}}, Capabilities: registrationCapabilities{ModelProvider: true, ModelRouter: true, Executor: true, Scheduler: true, ExecutorModelScope: string(pluginapi.ExecutorModelScopeStatic), ExecutorInputFormats: formats, ExecutorOutputFormats: formats}}
+func pluginRegistration() registration {
+	// A canonical OpenAI surface makes CPA translate every frontend protocol to
+	// one stable executor contract. The executor then translates canonical JSON
+	// to each selected provider's protocol and back.
+	formats := []string{"openai"}
+	return registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Universal Provider", Version: "0.1.1", Author: "cary17", GitHubRepository: "https://github.com/cary17/cpa-universal-provider-plugin", ConfigFields: []pluginapi.ConfigField{
+		{Name: "providers", Type: pluginapi.ConfigFieldTypeArray, Description: "独立协议、凭据、模型和能力的供应商列表。"},
+	}}, Capabilities: registrationCapabilities{ModelProvider: true, ModelRouter: true, Executor: true, Scheduler: true, ManagementAPI: true, ExecutorModelScope: string(pluginapi.ExecutorModelScopeStatic), ExecutorInputFormats: formats, ExecutorOutputFormats: formats}}
 }
 
 func staticModels() ([]byte, error) {
@@ -76,18 +81,15 @@ func staticModels() ([]byte, error) {
 	if s == nil {
 		return nil, fmt.Errorf("插件尚未配置")
 	}
-	models := make([]pluginapi.ModelInfo, 0, len(s.Config.Models))
-	for _, m := range s.Config.Models {
-		id := m.Alias
-		if id == "" {
-			id = m.Name
-		}
+	models := make([]pluginapi.ModelInfo, 0, len(s.ByPublicModel))
+	for id, binding := range s.ByPublicModel {
+		m := binding.Model
 		display := m.DisplayName
 		if display == "" {
 			display = id
 		}
 		generationMethods := []string{"chat"}
-		if s.Config.Protocol == "gemini" {
+		if binding.Provider.Config.Protocol == "gemini" {
 			generationMethods = []string{"generateContent"}
 		}
 		models = append(models, pluginapi.ModelInfo{ID: id, Object: "model", OwnedBy: pluginID, Name: m.Name, DisplayName: display, ContextLength: m.MaxContextLength, InputTokenLimit: m.MaxContextLength, SupportedGenerationMethods: generationMethods, SupportedInputModalities: append([]string(nil), m.InputModalities...), SupportedOutputModalities: append([]string(nil), m.OutputModalities...), Thinking: &pluginapi.ThinkingSupport{ZeroAllowed: true, DynamicAllowed: true, Levels: []string{"minimal", "low", "medium", "high", "xhigh"}}, UserDefined: true})
@@ -109,13 +111,14 @@ func routeModel(raw []byte) ([]byte, error) {
 	if s == nil {
 		return nil, fmt.Errorf("插件尚未配置")
 	}
-	if _, ok := s.nativeModel(req.RequestedModel); !ok {
+	binding, ok := s.nativeModel(req.RequestedModel)
+	if !ok {
 		return okEnvelope(pluginapi.ModelRouteResponse{Handled: false})
 	}
-	if !s.Config.ImageGeneration && clearlyImageGeneration(req.Body) {
+	if !binding.Provider.Config.ImageGeneration && clearlyImageGeneration(req.Body) {
 		return rpcError("image_generation_disabled", "配置已禁用图像生成", 400)
 	}
-	return okEnvelope(pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetSelf, Reason: "universal_provider_model"})
+	return okEnvelope(pluginapi.ModelRouteResponse{Handled: true, TargetKind: pluginapi.ModelRouteTargetSelf, TargetModel: binding.InternalModel, Reason: "universal_provider_model"})
 }
 
 type schedulerCredential struct {

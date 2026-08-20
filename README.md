@@ -1,61 +1,61 @@
 # CPA Universal Provider 原生插件
 
-`universal-provider` 是 CLIProxyAPI（CPA）的 Go `c-shared` 原生插件。它把一组用户声明的模型路由到一个 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 或 Gemini GenerateContent 兼容上游，并由插件自己的静态 API Key 池执行请求。
+`universal-provider` v0.1.1 是 CLIProxyAPI（CPA）的 Go `c-shared` 原生插件。它把公开模型别名路由到多个独立配置的 OpenAI Chat Completions、OpenAI Responses、Anthropic Messages 或 Gemini GenerateContent 兼容上游。
 
-## 能力
+## 功能
 
-插件同时声明 CPA 的 `model_provider`、`model_router`、`executor` 与 `scheduler` 能力：
+- `providers` 列表；每项有唯一 `id`/`name`、启用状态、协议、Base URL、headers、加权 API keys、models、图像开关与 reasoning effort。
+- 启用供应商间公开模型 alias 必须全局唯一；禁用供应商不注册模型。
+- 路由把供应商 ID 编码在只供 executor 使用的内部 `TargetModel`，公开模型列表不会泄漏该定位值。
+- 每个供应商拥有独立 API-key SWRR 池。
+- 专属 `/v0/resource/plugins/universal-provider/providers` 管理页支持添加、编辑、复制、启停、删除（有二次确认）。资源路由只返回静态页面，不能修改配置；页面仅通过带 management Bearer key 的 CPA `GET/PUT /v0/management/plugins/universal-provider/config` 保存并触发 CPA 热重载。key 只在 `sessionStorage` 中保存，API key 输入不写日志，页面不加载第三方脚本并以 DOM `textContent` 渲染用户值。
+- PUT 基于 GET 返回对象替换 `providers`，因此保留宿主的 `enabled`、`priority` 和未知宿主字段。
 
-- `model_provider` 注册配置中的模型、别名、显示名称、上下文长度和输入/输出模态；
-- `model_router` 仅接管已配置模型并路由到自身 executor；
-- `executor` 生成协议正确的 URL 和认证头，通过 CPA host callback 发起 HTTP；
-- `scheduler` 可处理真实 host auth 候选；配置内静态凭据则由 executor 内部的平滑加权轮询（SWRR）选择，因为 CPA ABI **没有**把插件配置内凭据注册成 host auth candidate 的虚构接口。
+## 配置
 
-## 构建与验证
+参见 [`config.example.yaml`](config.example.yaml)。旧版单供应商的 `protocol`、`base-url`、`headers`、`api-key-entries`、`models`、`image-generation`、`reasoning-effort` 会在内存中迁移为 ID `legacy` 的单项 providers 配置；下次从管理 UI 保存时写成新结构。
 
-要求 Go（SDK v7.2.137 会按 Go toolchain 机制使用 Go 1.26）和 C 编译工具链：
+四种协议标识为 `openai`、`openai-response`、`claude`、`gemini`。插件对 CPA 声明 canonical `openai` executor 输入/输出：CPA 先把不同客户端协议转换为 OpenAI，插件再使用 CPA SDK builtin translator 转为选中供应商协议；非流式与流式响应反向转回 OpenAI，最后由 CPA 转回客户端协议。
+
+`reasoning-effort` 支持 `auto`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`、`max`。OpenAI/Responses 原样写入 `max`；Claude `max` 映射到 32768 thinking budget tokens；Gemini 没有对应 `max` 等级，因此映射为 `high`。`auto` 不覆盖请求。
+
+关闭 `image-generation` 会从注册模型移除 image 输出模态，并拒绝明显的图像生成请求。插件不注册单独的 `/v1/images` 路由。
+
+## 构建和验证
+
+本环境若 `/tmp` 为 `noexec`，必须设置项目内 `GOTMPDIR`：
 
 ```bash
-go mod tidy
+mkdir -p .gotmp
+export GOTMPDIR="$PWD/.gotmp"
 gofmt -w *.go
-go test ./...
+go test -count=1 ./...
 go vet ./...
 make build
 make test-abi
 ```
 
-产物为 `bin/universal-provider.so`。将 `.so` 复制到 CPA `plugins.dir`，并按 `config.example.yaml` 合并配置。文件基本名即插件 ID，必须是 `universal-provider`。
+本地 Linux 产物为 `bin/universal-provider.so`。插件只通过 CPA host HTTP callbacks 请求上游，不直接创建 `http.Client`；不会记录 API keys。
 
-## 配置
+## 插件商店安装和更新
 
-- `protocol`：严格四选一：`openai`、`openai-response`、`claude`、`gemini`；这些是 CPA SDK 的官方格式标识。
-- `base-url`：绝对 `http(s)` API 根 URL，不以 `/` 结尾。
-- `headers`：附加上游请求头。认证头最终由插件覆盖，避免客户端伪造认证。
-- `api-key-entries`：`api-key` 与可选 `weight`。省略权重为 1，`<=0` 排除，超过 1,000,000 拒绝。配置内有效 key 至少一个。
-- `models`：`name` 是上游模型名；`alias` 是客户端模型名（省略则等于 `name`）；还支持 `display-name`、`max-context-length`、`input-modalities`、`output-modalities`。
-- `image-generation`：关闭时注册模型会去掉 `image` 输出模态，并拒绝 `modalities:["image"]` 或显式 `image_generation` / `generate_image` 工具等明显图像生成请求；开启时允许图像输出声明和这类请求。
-- `reasoning-effort`：`auto`、`none`、`minimal`、`low`、`medium`、`high`、`xhigh`。`auto` 不改写已有推理字段。其他值写入：OpenAI `reasoning_effort`、Responses `reasoning.effort`、Claude `thinking`、Gemini `generationConfig.thinkingConfig.thinkingLevel`。Claude 的等级映射为禁用或 1024/4096/8192/16384 token 预算；Gemini `none` 合理降级为 `minimal`。
+仓库包含 `.github/workflows/release.yml`。未来推送严格的 `v0.1.1` tag 时，Actions 为受支持平台构建：
 
-配置解析使用 YAML `KnownFields` 严格校验，同时接受 CPA 注入的 `enabled` 和 `priority`。热重载先完整解析和验证新快照，成功后才原子替换旧配置；失败时旧配置继续工作。实现不写日志，因此不会把 API Key 输出到日志。
+```text
+universal-provider_0.1.1_<goos>_<goarch>.zip
+checksums.txt
+```
 
-## 协议 URL 与认证
+每个 zip 根目录直接包含 `universal-provider.so`（Linux）或 `universal-provider.dylib`（macOS），符合 CPA `github-release` 插件商店解析规则。当前改动不会 tag、发布或 push。
 
-| protocol | URL 后缀 | 认证 |
-|---|---|---|
-| `openai` | `/chat/completions` | `Authorization: Bearer <api-key>` |
-| `openai-response` | `/responses` | `Authorization: Bearer <api-key>` |
-| `claude` | `/messages` | `x-api-key` + 默认 `anthropic-version: 2023-06-01` |
-| `gemini` | `/models/{model}:generateContent`；流式为 `streamGenerateContent?alt=sse` | `x-goog-api-key` |
+将 [`registry-entry.example.json`](registry-entry.example.json) 的插件条目提交到 CPA 官方 registry，或把该 schema-v1 JSON 托管在固定 HTTPS URL 作为第三方 registry。CPA 配置中的插件 registry URL 列表加入该 URL 后，即可在 Plugin Store 在线安装；后续发布更高 semver tag 及同名平台归档和 `checksums.txt`，商店即可检测并执行更新。私有仓库需按 CPA 插件商店的 GitHub 认证配置提供访问权限。
 
-非流式请求只调用 `host.http.do`。流式请求调用 `host.http.do_stream`，循环 `host.http.stream_read`，始终 `host.http.stream_close`；下游使用 `host.stream.emit` 与 `host.stream.close`。插件没有直接使用 `net/http.Client`。
+## 安全与限制
 
-插件不会把 CPA 前端认证凭据转发给第三方上游：Claude/Gemini 模式会清除入站 `Authorization`，随后只写入对应协议的上游认证头；OpenAI 两种模式会覆盖 `Authorization`。
-
-## 关键限制
-
-1. CPA 当前插件 ABI 没有“从插件配置注册静态 auth”的接口，所以这些 key 不会出现在 CPA auth 管理列表；SWRR 在 executor 内完成。插件的 scheduler 只对 CPA 实际提供的 auth candidates 做选择。
-2. 本插件只声明模型并执行已有模型入口请求，**不注册 `/v1/images`**；CPA 插件 API 也未提供这种前端模型端点注册能力。`image-generation` 只控制模型输出声明和对明显图像生成意图的许可。
-3. executor 声明单一配置协议作为输入/输出格式。跨协议客户端请求能否使用，取决于 CPA 对该协议组合是否有请求及响应转换器。
-4. 上游响应体只在结构化错误中摘取 `error.message`，不回显或记录凭据。项目未配置真实上游密钥，因此测试使用纯单元/ABI 构建验证，不声称完成真实付费 API 调用。
+- management resource 路由未认证，所以它只返回 UI；所有读写均走 CPA 已认证 management API。
+- UI 无法从当前 CPA 管理器源码确认一个稳定的 management-key localStorage 键，因此明确要求输入 key，且只存 sessionStorage。
+- API key 权重省略为 1；`<=0` 排除，最大 1,000,000；每个供应商至少一个有效 key。
+- 配置严格使用 YAML `KnownFields` 校验。重配置成功后才原子替换 runtime state，失败时旧状态继续运行。
+- 没有真实付费 API 集成测试；测试覆盖配置、迁移、路由、SWRR、协议转换、管理注册和 UI 安全字符串。
 
 项目仓库：<https://github.com/cary17/cpa-universal-provider-plugin>

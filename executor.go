@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -8,6 +9,8 @@ import (
 
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginabi"
 	"github.com/router-for-me/CLIProxyAPI/v7/sdk/pluginapi"
+	sdktranslator "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator"
+	_ "github.com/router-for-me/CLIProxyAPI/v7/sdk/translator/builtin"
 )
 
 type rpcExecutorRequest struct {
@@ -21,6 +24,8 @@ type hostHTTPRequest struct {
 	URL            string      `json:"url"`
 	Headers        http.Header `json:"headers,omitempty"`
 	Body           []byte      `json:"body,omitempty"`
+	TargetFormat   string      `json:"-"`
+	UpstreamModel  string      `json:"-"`
 }
 type hostHTTPStreamResponse struct {
 	StatusCode int         `json:"status_code"`
@@ -62,7 +67,7 @@ func execute(raw []byte) ([]byte, error) {
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
 		return rpcError("upstream_error", safeUpstreamError(resp.StatusCode, resp.Body), resp.StatusCode)
 	}
-	return okEnvelope(pluginapi.ExecutorResponse{Payload: resp.Body, Headers: resp.Headers})
+	return okEnvelope(pluginapi.ExecutorResponse{Payload: translateNonStreamResponse(req.Format, up.TargetFormat, up.UpstreamModel, req.OriginalRequest, up.Body, resp.Body), Headers: resp.Headers})
 }
 
 func executeStream(raw []byte) ([]byte, error) {
@@ -89,18 +94,19 @@ func executeStream(raw []byte) ([]byte, error) {
 		_ = callHost(pluginabi.MethodHostHTTPStreamClose, map[string]string{"stream_id": resp.StreamID}, nil)
 		return rpcError("upstream_error", fmt.Sprintf("上游返回 HTTP %d", resp.StatusCode), resp.StatusCode)
 	}
-	go forwardStream(resp.StreamID, req.StreamID)
+	go forwardStream(resp.StreamID, req.StreamID, req.Format, up.TargetFormat, up.UpstreamModel, req.OriginalRequest, up.Body)
 	return okEnvelope(struct {
 		Headers http.Header `json:"headers,omitempty"`
 	}{Headers: resp.Headers})
 }
 
-func forwardStream(upstreamID, downstreamID string) {
+func forwardStream(upstreamID, downstreamID, sourceFormat, targetFormat, model string, original, translatedRequest []byte) {
 	var finalErr string
 	defer func() {
 		_ = callHost(pluginabi.MethodHostHTTPStreamClose, map[string]string{"stream_id": upstreamID}, nil)
 		_ = callHost(pluginabi.MethodHostStreamClose, streamClose{StreamID: downstreamID, Error: finalErr}, nil)
 	}()
+	var param any
 	for {
 		var chunk hostHTTPStreamReadResponse
 		if err := callHost(pluginabi.MethodHostHTTPStreamRead, map[string]string{"stream_id": upstreamID}, &chunk); err != nil {
@@ -112,9 +118,12 @@ func forwardStream(upstreamID, downstreamID string) {
 			return
 		}
 		if len(chunk.Payload) > 0 {
-			if err := callHost(pluginabi.MethodHostStreamEmit, streamEmit{StreamID: downstreamID, Payload: chunk.Payload}, nil); err != nil {
-				finalErr = err.Error()
-				return
+			frames := translateStreamResponse(sourceFormat, targetFormat, model, original, translatedRequest, chunk.Payload, &param)
+			for _, frame := range frames {
+				if err := callHost(pluginabi.MethodHostStreamEmit, streamEmit{StreamID: downstreamID, Payload: frame}, nil); err != nil {
+					finalErr = err.Error()
+					return
+				}
 			}
 		}
 		if chunk.Done {
@@ -139,28 +148,57 @@ func executorHTTPRequest(raw []byte) ([]byte, error) {
 }
 
 func prepareUpstream(s *runtimeState, req *rpcExecutorRequest) (hostHTTPRequest, error) {
-	m, ok := s.nativeModel(req.Model)
+	binding, ok := s.nativeModel(req.Model)
 	if !ok {
 		return hostHTTPRequest{}, fmt.Errorf("未配置模型 %q", req.Model)
 	}
-	if !s.Config.ImageGeneration && clearlyImageGeneration(req.Payload) {
+	p := binding.Provider
+	if !p.Config.ImageGeneration && clearlyImageGeneration(req.Payload) {
 		return hostHTTPRequest{}, fmt.Errorf("配置已禁用图像生成")
 	}
-	cred := s.pickCredential()
+
+	cred := p.pickCredential()
 	if cred == nil {
 		return hostHTTPRequest{}, fmt.Errorf("无可用 API key")
 	}
-	body, err := rewritePayload(req.Payload, m.Name, s.Config.Protocol, s.Config.ReasoningEffort, req.Stream)
+	// req.Payload already conforms to req.Format after CPA's executor adapter.
+	// SourceFormat is the original client protocol and must not parse this body.
+	source := req.Format
+	if source == "" {
+		source = "openai"
+	}
+	translated := sdktranslator.TranslateRequest(sdktranslator.FromString(source), sdktranslator.FromString(p.Config.Protocol), binding.Model.Name, req.Payload, req.Stream)
+	body, err := rewritePayload(translated, binding.Model.Name, p.Config.Protocol, p.Config.ReasoningEffort, req.Stream)
 	if err != nil {
 		return hostHTTPRequest{}, err
 	}
 	headers := cloneHeader(req.Headers)
-	for k, v := range s.Config.Headers {
+	for k, v := range p.Config.Headers {
 		headers.Set(k, v)
 	}
 	headers.Set("Content-Type", "application/json")
-	applyAuth(headers, s.Config.Protocol, cred.APIKey)
-	return hostHTTPRequest{HostCallbackID: req.HostCallbackID, Method: http.MethodPost, URL: upstreamURL(s.Config.BaseURL, s.Config.Protocol, m.Name, req.Stream), Headers: headers, Body: body}, nil
+	applyAuth(headers, p.Config.Protocol, cred.APIKey)
+	return hostHTTPRequest{HostCallbackID: req.HostCallbackID, Method: http.MethodPost, URL: upstreamURL(p.Config.BaseURL, p.Config.Protocol, binding.Model.Name, req.Stream), Headers: headers, Body: body, TargetFormat: p.Config.Protocol, UpstreamModel: binding.Model.Name}, nil
+}
+
+func translateNonStreamResponse(source, target, model string, original, request, response []byte) []byte {
+	if source == "" {
+		source = "openai"
+	}
+	if target == source {
+		return response
+	}
+	var param any
+	return sdktranslator.TranslateNonStream(context.Background(), sdktranslator.FromString(target), sdktranslator.FromString(source), model, original, request, response, &param)
+}
+func translateStreamResponse(source, target, model string, original, request, response []byte, param *any) [][]byte {
+	if source == "" {
+		source = "openai"
+	}
+	if target == source {
+		return [][]byte{response}
+	}
+	return sdktranslator.TranslateStream(context.Background(), sdktranslator.FromString(target), sdktranslator.FromString(source), model, original, request, response, param)
 }
 func cloneHeader(h http.Header) http.Header {
 	out := make(http.Header, len(h))
@@ -267,6 +305,8 @@ func claudeThinking(e string) map[string]any {
 		return map[string]any{"type": "enabled", "budget_tokens": 8192}
 	case "xhigh":
 		return map[string]any{"type": "enabled", "budget_tokens": 16384}
+	case "max":
+		return map[string]any{"type": "enabled", "budget_tokens": 32768}
 	}
 	return map[string]any{"type": "adaptive"}
 }
@@ -274,7 +314,7 @@ func geminiThinking(e string) string {
 	if e == "none" {
 		return "minimal"
 	}
-	if e == "xhigh" {
+	if e == "xhigh" || e == "max" {
 		return "high"
 	}
 	return e
