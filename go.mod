@@ -1,4 +1,4 @@
-module github.com/neverbehave/cpa-universal-provider-plugin
+module github.com/cary17/cpa-universal-provider-plugin
 
 go 1.26.0
 

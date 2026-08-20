@@ -63,7 +63,7 @@ func handleMethod(method string, raw []byte) ([]byte, error) {
 
 func pluginRegistration(protocol string) registration {
 	formats := []string{protocol}
-	return registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Universal Provider", Version: "0.1.0", Author: "neverbehave", GitHubRepository: "https://github.com/neverbehave/cpa-universal-provider-plugin", ConfigFields: []pluginapi.ConfigField{
+	return registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Universal Provider", Version: "0.1.0", Author: "cary17", GitHubRepository: "https://github.com/cary17/cpa-universal-provider-plugin", ConfigFields: []pluginapi.ConfigField{
 		{Name: "protocol", Type: pluginapi.ConfigFieldTypeEnum, EnumValues: []string{"openai", "openai-response", "claude", "gemini"}, Description: "上游 CPA 协议标识。"},
 		{Name: "base-url", Type: pluginapi.ConfigFieldTypeString, Description: "上游 API 根 URL。"}, {Name: "headers", Type: pluginapi.ConfigFieldTypeObject, Description: "附加请求头。"},
 		{Name: "api-key-entries", Type: pluginapi.ConfigFieldTypeArray, Description: "静态 API key 与权重。"}, {Name: "models", Type: pluginapi.ConfigFieldTypeArray, Description: "模型及模态元数据。"},

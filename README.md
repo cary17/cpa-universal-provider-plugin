@@ -58,4 +58,4 @@ make test-abi
 3. executor 声明单一配置协议作为输入/输出格式。跨协议客户端请求能否使用，取决于 CPA 对该协议组合是否有请求及响应转换器。
 4. 上游响应体只在结构化错误中摘取 `error.message`，不回显或记录凭据。项目未配置真实上游密钥，因此测试使用纯单元/ABI 构建验证，不声称完成真实付费 API 调用。
 
-项目仓库：<https://github.com/neverbehave/cpa-universal-provider-plugin>
+项目仓库：<https://github.com/cary17/cpa-universal-provider-plugin>
