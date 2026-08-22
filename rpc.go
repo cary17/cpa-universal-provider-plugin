@@ -71,7 +71,7 @@ func pluginRegistration() registration {
 	// one stable executor contract. The executor then translates canonical JSON
 	// to each selected provider's protocol and back.
 	formats := []string{"openai"}
-	return registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Universal Provider", Version: "0.1.1", Author: "cary17", GitHubRepository: "https://github.com/cary17/cpa-universal-provider-plugin", ConfigFields: []pluginapi.ConfigField{
+	return registration{SchemaVersion: pluginabi.SchemaVersion, Metadata: pluginapi.Metadata{Name: "Universal Provider", Version: "0.1.3", Author: "cary17", GitHubRepository: "https://github.com/cary17/cpa-universal-provider-plugin", ConfigFields: []pluginapi.ConfigField{
 		{Name: "providers", Type: pluginapi.ConfigFieldTypeArray, Description: "独立协议、凭据、模型和能力的供应商列表。"},
 	}}, Capabilities: registrationCapabilities{ModelProvider: true, ModelRouter: true, Executor: true, Scheduler: true, ManagementAPI: true, ExecutorModelScope: string(pluginapi.ExecutorModelScopeStatic), ExecutorInputFormats: formats, ExecutorOutputFormats: formats}}
 }

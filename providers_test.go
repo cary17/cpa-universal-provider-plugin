@@ -146,9 +146,128 @@ func TestPerProviderSWRRAndPrepareUsesPinnedProvider(t *testing.T) {
 	}
 }
 
+func TestManagementRoutesIncludeProviderAPIs(t *testing.T) {
+	out, err := handleMethod(pluginabi.MethodManagementRegister, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var env envelope
+	if err := json.Unmarshal(out, &env); err != nil {
+		t.Fatal(err)
+	}
+	var registration pluginapi.ManagementRegistrationResponse
+	if err := json.Unmarshal(env.Result, &registration); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]bool{
+		"GET /providers":         true,
+		"POST /providers/models": true,
+	}
+	for _, route := range registration.Routes {
+		delete(want, route.Method+" "+route.Path)
+	}
+	if len(want) != 0 {
+		t.Fatalf("missing management routes: %#v", want)
+	}
+	if len(registration.Resources) != 1 || registration.Resources[0].Path != "/providers" {
+		t.Fatalf("resources=%#v", registration.Resources)
+	}
+}
+
+func TestManagementProviderListDoesNotExposeUpstreamSecrets(t *testing.T) {
+	s, err := decodeConfig(providersYAML())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Store(s)
+
+	readRequest, _ := json.Marshal(rpcManagementRequest{ManagementRequest: pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/management/plugins/universal-provider/providers"}})
+	out, err := handleMethod(pluginabi.MethodManagementHandle, readRequest)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var readEnvelope envelope
+	if err := json.Unmarshal(out, &readEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var readResponse pluginapi.ManagementResponse
+	if err := json.Unmarshal(readEnvelope.Result, &readResponse); err != nil {
+		t.Fatal(err)
+	}
+	if readResponse.StatusCode != http.StatusOK || strings.Contains(string(readResponse.Body), "key-a") {
+		t.Fatalf("provider list must be readable without upstream secrets: %#v", readResponse)
+	}
+	var listPayload struct {
+		Providers []managementProviderSummary `json:"providers"`
+	}
+	if err := json.Unmarshal(readResponse.Body, &listPayload); err != nil {
+		t.Fatal(err)
+	}
+	if len(listPayload.Providers) != 2 || listPayload.Providers[0].KeyCount == 0 {
+		t.Fatalf("unexpected provider list: %#v", listPayload)
+	}
+}
+
+func TestHandleMethodServesStaticModelsAndManagementResources(t *testing.T) {
+	s, err := decodeConfig(providersYAML())
+	if err != nil {
+		t.Fatal(err)
+	}
+	state.Store(s)
+
+	out, err := handleMethod(pluginabi.MethodModelStatic, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var modelEnvelope envelope
+	if err := json.Unmarshal(out, &modelEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var modelResponse pluginapi.ModelResponse
+	if err := json.Unmarshal(modelEnvelope.Result, &modelResponse); err != nil {
+		t.Fatal(err)
+	}
+	if len(modelResponse.Models) == 0 {
+		t.Fatalf("model.static returned no models: %s", out)
+	}
+
+	out, err = handleMethod(pluginabi.MethodManagementRegister, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var registrationEnvelope envelope
+	if err := json.Unmarshal(out, &registrationEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var managementRegistration pluginapi.ManagementRegistrationResponse
+	if err := json.Unmarshal(registrationEnvelope.Result, &managementRegistration); err != nil {
+		t.Fatal(err)
+	}
+	if len(managementRegistration.Resources) != 1 || managementRegistration.Resources[0].Path != "/providers" {
+		t.Fatalf("management.register resources=%#v", managementRegistration.Resources)
+	}
+
+	req, _ := json.Marshal(pluginapi.ManagementRequest{Method: http.MethodGet, Path: "/v0/resource/plugins/universal-provider/providers"})
+	out, err = handleMethod(pluginabi.MethodManagementHandle, req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var managementEnvelope envelope
+	if err := json.Unmarshal(out, &managementEnvelope); err != nil {
+		t.Fatal(err)
+	}
+	var managementResponse pluginapi.ManagementResponse
+	if err := json.Unmarshal(managementEnvelope.Result, &managementResponse); err != nil {
+		t.Fatal(err)
+	}
+	if managementResponse.StatusCode != http.StatusOK || !strings.Contains(string(managementResponse.Body), "供应商管理") {
+		t.Fatalf("management.handle response=%#v", managementResponse)
+	}
+}
+
 func TestRegistrationAndManagementProvidersResource(t *testing.T) {
 	r := pluginRegistration()
-	if r.Metadata.Version != "0.1.1" || !r.Capabilities.ManagementAPI {
+	if r.Metadata.Version != "0.1.3" || !r.Capabilities.ManagementAPI {
 		t.Fatalf("registration=%#v", r)
 	}
 	want := []string{"openai"}
@@ -175,18 +294,26 @@ func TestRegistrationAndManagementProvidersResource(t *testing.T) {
 	var resp pluginapi.ManagementResponse
 	_ = json.Unmarshal(e.Result, &resp)
 	html := string(resp.Body)
-	for _, needle := range []string{"Add provider", "Edit", "Copy", "Enable", "Delete", "confirm(", `type="password"`, "sessionStorage", "/v0/management/plugins/universal-provider/config", "textContent", "priority", "enabled"} {
+	for _, needle := range []string{
+		"供应商管理", "新增供应商", "类型", "名称", "Base URL", "模型", "密钥数量", "状态", "操作",
+		"OpenAI 兼容", "OpenAI Responses", "Anthropic", "Gemini", "编辑供应商",
+		"拉取模型", "搜索模型", "保存更改", "测试连通性", "连通性测试", "发送一次测试请求", "添加模型", "排除的模型", "上游模型名 → 公开别名", "textContent", "credentials:'same-origin'",
+		"/v0/management/plugins/universal-provider/providers", "/v0/management/plugins/universal-provider/providers/models",
+	} {
 		if !strings.Contains(html, needle) {
 			t.Errorf("HTML missing %q", needle)
 		}
 	}
-	for _, forbidden := range []string{"<script src=", "innerHTML", "localStorage.setItem"} {
+	for _, forbidden := range []string{
+		"<script src=", "innerHTML", "sessionStorage", `type="password"`,
+		"window.parent", "postMessage", "管理面板密钥", "remote-management.secret-key",
+	} {
 		if strings.Contains(html, forbidden) {
-			t.Errorf("HTML contains unsafe %q", forbidden)
+			t.Errorf("HTML contains forbidden or coupled content %q", forbidden)
 		}
 	}
-	if !strings.Contains(html, "Legacy provider") || !strings.Contains(html, "cfg.protocol") {
-		t.Fatal("HTML does not migrate legacy singleton config")
+	if got := resp.Headers.Get("Content-Security-Policy"); got == "" {
+		t.Fatal("management resource must preserve a CSP header")
 	}
 }
 

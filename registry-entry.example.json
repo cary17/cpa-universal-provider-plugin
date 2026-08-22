@@ -6,7 +6,7 @@
       "name": "Universal Provider",
       "description": "Route public model aliases to multiple weighted OpenAI, Responses, Claude, or Gemini-compatible providers.",
       "author": "cary17",
-      "version": "0.1.1",
+      "version": "0.1.3",
       "repository": "https://github.com/cary17/cpa-universal-provider-plugin",
       "license": "MIT",
       "tags": ["provider", "router", "openai", "claude", "gemini"],

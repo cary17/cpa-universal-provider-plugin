@@ -35,7 +35,7 @@ jobs:
           set -euo pipefail
           [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "invalid release tag" >&2; exit 1; }
           version="${TAG#v}"
-          [[ "$version" == "0.1.1" ]] || { echo "tag version does not match embedded plugin version 0.1.1" >&2; exit 1; }
+          [[ "$version" == "0.1.3" ]] || { echo "tag version does not match embedded plugin version 0.1.3" >&2; exit 1; }
           mkdir -p dist/stage .gotmp
           export GOTMPDIR="$PWD/.gotmp"
           go test -count=1 ./...

@@ -161,6 +161,11 @@ func prepareUpstream(s *runtimeState, req *rpcExecutorRequest) (hostHTTPRequest,
 	if cred == nil {
 		return hostHTTPRequest{}, fmt.Errorf("无可用 API key")
 	}
+	if !credentialAvailable(p, cred, timeNowMillis()) {
+		if alt := p.pickAvailableCredential(timeNowMillis()); alt != nil {
+			cred = alt
+		}
+	}
 	// req.Payload already conforms to req.Format after CPA's executor adapter.
 	// SourceFormat is the original client protocol and must not parse this body.
 	source := req.Format
